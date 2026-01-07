@@ -8,8 +8,8 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # --- CONFIG ---
-st.set_page_config(page_title="Universal Order Processor_Create By Mulyanto", layout="wide")
-st.title("🛒 Universal Marketplace Order Processor")
+st.set_page_config(page_title="Universal Order Processor - Created By Mulyanto", layout="wide")
+st.title("🛒 Universal Marketplace Order Processor - Created By Mulyanto")
 st.markdown("""
 **Logic Applied:**
 1. **Shopee**: Status='Perlu Dikirim' | Resi=Blank | Managed='No' | Kurir=Instant(Kamus).
