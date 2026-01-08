@@ -9,13 +9,13 @@ warnings.filterwarnings('ignore')
 
 # --- CONFIG ---
 st.set_page_config(page_title="Universal Order Processor", layout="wide")
-st.title("🛒 Universal Marketplace Order Processor-Created By Mulyanto")
+st.title("🛒 Universal Marketplace Order Processor")
 st.markdown("""
 **Logic Applied:**
-1. **Shopee (Official)**: Status='Perlu Dikirim' | Resi=Blank | Managed='No' | **Kurir=Instant (Kamus)**.
-2. **Shopee (INHOUSE)**: Status='Perlu Dikirim' | Resi=Blank | **Kurir=Instant (Kamus)** | *(Tanpa Cek Managed)*.
+1. **Shopee (Official)**: Status='Perlu Dikirim' | Resi=Blank | Managed='No' (Optional) | **Kurir=Instant (Kamus)**.
+2. **Shopee (INHOUSE)**: Status='Perlu Dikirim' | Resi=Blank | **Kurir=Instant (Kamus)**.
 3. **Tokopedia**: Status='Perlu Dikirim'.
-4. **SKU Logic**: Prefix **FG-** & **CS-** dipertahankan, sisanya ambil suffix.
+4. **SKU Logic**: Shopee Priority -> **'Nomor Referensi SKU'**.
 """)
 
 # --- DEBUG MODE ---
@@ -40,17 +40,14 @@ def load_data_smart(file_obj):
     filename = file_obj.name.lower()
     
     try:
-        # 1. Coba baca Excel
         if filename.endswith('.xlsx') or filename.endswith('.xls'):
             try: df = pd.read_excel(file_obj, dtype=str, header=None, engine='openpyxl')
             except: df = None
 
-        # 2. Coba baca CSV
         if df is None or df.shape[1] <= 1:
             file_obj.seek(0)
             encodings = ['utf-8-sig', 'utf-8', 'latin-1']
             separators = [',', ';', '\t']
-            
             for enc in encodings:
                 if df is not None and df.shape[1] > 1: break
                 for sep in separators:
@@ -69,10 +66,8 @@ def load_data_smart(file_obj):
 
     if df is None or df.empty: return None, "File kosong atau format tidak dikenali."
 
-    # 3. Auto-Detect Header
     header_idx = 0
-    keywords = ['status', 'sku', 'order', 'pesanan', 'quantity', 'jumlah', 'product', 'opsi pengiriman', 'shipping']
-    
+    keywords = ['status', 'sku', 'order', 'pesanan', 'quantity', 'jumlah', 'product', 'opsi pengiriman']
     for i in range(min(20, df.shape[0])):
         row_str = " ".join([str(v).lower() for v in df.iloc[i].dropna().values])
         if sum(1 for kw in keywords if kw in row_str) >= 2:
@@ -93,7 +88,7 @@ def load_data_smart(file_obj):
 # ==========================================
 def process_universal_data(uploaded_files, kamus_data):
     all_rows = []
-    raw_stats_list = [] # Untuk Tab Validasi
+    raw_stats_list = []
     
     # 1. PREPARE KAMUS
     try:
@@ -101,7 +96,6 @@ def process_universal_data(uploaded_files, kamus_data):
         df_bundle = kamus_data['bundle']
         df_sku = kamus_data['sku']
         
-        # Bundle Map
         bundle_map = {}
         k_cols = {str(c).lower(): c for c in df_bundle.columns}
         kit_c = next((v for k,v in k_cols.items() if any(x in k for x in ['kit','bundle','parent'])), None)
@@ -118,13 +112,11 @@ def process_universal_data(uploaded_files, kamus_data):
                     if k_val not in bundle_map: bundle_map[k_val] = []
                     bundle_map[k_val].append((c_val, q_val))
 
-        # SKU Name Map
         sku_name_map = {}
         for _, row in df_sku.iterrows():
             vals = [str(v).strip() for v in row if pd.notna(v) and str(v).strip()]
             if len(vals) >= 2: sku_name_map[clean_sku(vals[0])] = vals[1]
 
-        # Instant List
         instant_list = []
         if not df_kurir.empty:
             ins_col = next((c for c in df_kurir.columns if 'instant' in str(c).lower()), None)
@@ -149,12 +141,11 @@ def process_universal_data(uploaded_files, kamus_data):
         if DEBUG_MODE:
             st.sidebar.markdown(f"**Processing {mp_type}...**")
 
-        # --- A. CAPTURE RAW STATS (VALIDATION TAB) ---
+        # --- A. RAW STATS (VALIDATION) ---
         raw_kurir_col = None
         if 'shopee' in mp_type.lower():
             raw_kurir_col = next((c for c in df_raw.columns if any(x in c for x in ['opsi','kirim'])), None)
         elif 'tokopedia' in mp_type.lower():
-            # Prioritas: Shipping Provider -> Delivery Option -> Kurir
             raw_kurir_col = next((c for c in df_raw.columns if 'shipping provider' in c), None)
             if not raw_kurir_col:
                 raw_kurir_col = next((c for c in df_raw.columns if 'delivery option' in c), None)
@@ -162,19 +153,25 @@ def process_universal_data(uploaded_files, kamus_data):
                 raw_kurir_col = next((c for c in df_raw.columns if 'kurir' in c), None)
         
         if raw_kurir_col:
-            # Hitung per kurir
             stats = df_raw[raw_kurir_col].fillna('BLANK').value_counts().reset_index()
             stats.columns = ['Jenis Kurir', 'Jumlah Order (Raw)']
             stats['Sumber Data'] = mp_type
-            # Cek status di kamus (Optional decoration)
-            stats['Status Kamus'] = stats['Jenis Kurir'].apply(lambda x: '✅ Instant' if x in instant_list else '❌ Non-Instant')
+            
+            def check_status(k_name):
+                k_name = str(k_name).strip()
+                if k_name in instant_list: return '✅ Whitelisted'
+                k_lower = k_name.lower()
+                if 'instant' in k_lower or 'same' in k_lower: return '⚠️ Kemungkinan Instant'
+                return '❌ Non-Instant'
+                
+            stats['Status Sistem'] = stats['Jenis Kurir'].apply(check_status)
             raw_stats_list.append(stats)
         else:
             raw_stats_list.append(pd.DataFrame({
                 'Sumber Data': [mp_type],
                 'Jenis Kurir': ['(Kolom Kurir Tidak Ditemukan)'],
                 'Jumlah Order (Raw)': [len(df_raw)],
-                'Status Kamus': ['-']
+                'Status Sistem': ['-']
             }))
 
         # --- B. FILTERING LOGIC ---
@@ -186,21 +183,24 @@ def process_universal_data(uploaded_files, kamus_data):
             kurir_c = next((c for c in df_raw.columns if any(x in c for x in ['opsi','kirim'])), None)
             managed_c = next((c for c in df_raw.columns if 'dikelola' in c), None)
 
-            if all([status_c, resi_c, kurir_c, managed_c]):
-                c1 = df_raw[status_c].astype(str).str.strip() == 'Perlu Dikirim'
+            if all([status_c, resi_c, kurir_c]):
+                # Fix: Case Insensitive 'perlu dikirim'
+                c1 = df_raw[status_c].astype(str).str.strip().str.lower() == 'perlu dikirim'
                 c2 = df_raw[resi_c].fillna('').astype(str).str.strip().isin(['','nan','none'])
-                c3 = df_raw[managed_c].astype(str).str.strip().str.lower() == 'no'
                 c4 = df_raw[kurir_c].astype(str).str.strip().isin(instant_list)
                 
+                if managed_c:
+                     c3 = df_raw[managed_c].astype(str).str.strip().str.lower() == 'no'
+                else:
+                     c3 = True
+
                 df_filtered = df_raw[c1 & c2 & c3 & c4].copy()
-                
                 if DEBUG_MODE:
                     st.sidebar.text(f"  > Status OK: {c1.sum()}")
                     st.sidebar.text(f"  > Resi Blank: {c2.sum()}")
-                    st.sidebar.text(f"  > Managed No: {c3.sum()}")
                     st.sidebar.text(f"  > Kurir Instant: {c4.sum()}")
             else:
-                st.error(f"Shopee Official: Kolom tidak lengkap (Wajib: Status, Resi, Opsi Kirim, Dikelola)")
+                st.error(f"Shopee Official: Kolom Status/Resi/Opsi Kirim tidak lengkap!")
 
         # 2. SHOPEE INHOUSE
         elif mp_type == 'Shopee (INHOUSE)':
@@ -209,18 +209,18 @@ def process_universal_data(uploaded_files, kamus_data):
             kurir_c = next((c for c in df_raw.columns if any(x in c for x in ['opsi','kirim'])), None)
             
             if all([status_c, resi_c, kurir_c]):
-                c1 = df_raw[status_c].astype(str).str.strip() == 'Perlu Dikirim'
+                # Fix: Case Insensitive 'perlu dikirim'
+                c1 = df_raw[status_c].astype(str).str.strip().str.lower() == 'perlu dikirim'
                 c2 = df_raw[resi_c].fillna('').astype(str).str.strip().isin(['','nan','none'])
                 c3 = df_raw[kurir_c].astype(str).str.strip().isin(instant_list)
                 
                 df_filtered = df_raw[c1 & c2 & c3].copy()
-                
                 if DEBUG_MODE:
                     st.sidebar.text(f"  > Status OK: {c1.sum()}")
                     st.sidebar.text(f"  > Resi Blank: {c2.sum()}")
                     st.sidebar.text(f"  > Kurir Instant: {c3.sum()}")
             else:
-                st.error(f"Shopee Inhouse: Kolom tidak lengkap (Wajib: Status, Resi, Opsi Kirim)")
+                st.error(f"Shopee Inhouse: Kolom Status/Resi/Opsi Kirim tidak lengkap!")
 
         # 3. TOKOPEDIA
         elif mp_type == 'Tokopedia':
@@ -228,19 +228,30 @@ def process_universal_data(uploaded_files, kamus_data):
             if status_c:
                 c1 = df_raw[status_c].astype(str).str.strip().str.lower() == 'perlu dikirim'
                 df_filtered = df_raw[c1].copy()
-                if DEBUG_MODE:
-                     st.sidebar.text(f"  > Status OK: {c1.sum()}")
             else:
                 st.error("Tokopedia: Kolom Status tidak ditemukan")
 
-        # --- C. MAPPING ---
+        # --- C. MAPPING SKU ---
         if df_filtered.empty:
-            if DEBUG_MODE: st.sidebar.warning(f"  > 0 data lolos filter.")
             continue
 
-        if DEBUG_MODE: st.sidebar.success(f"  > {len(df_filtered)} data diproses.")
+        if DEBUG_MODE: st.sidebar.success(f"  > {len(df_filtered)} data lolos filter.")
 
-        col_sku = next((c for c in df_raw.columns if 'sku' in c), 'SKU')
+        col_sku = 'SKU' # default
+        if 'shopee' in mp_type.lower():
+            # Cari spesifik 'nomor referensi sku' dulu
+            col_sku = next((c for c in df_raw.columns if 'nomor referensi sku' in c), None)
+            if not col_sku:
+                col_sku = next((c for c in df_raw.columns if 'referensi sku' in c), None)
+            if not col_sku:
+                col_sku = next((c for c in df_raw.columns if 'sku' in c), 'SKU')
+        else:
+            col_sku = next((c for c in df_raw.columns if any(x in c for x in ['seller sku', 'nomor sku'])), None)
+            if not col_sku:
+                 col_sku = next((c for c in df_raw.columns if 'sku' in c), 'SKU')
+        
+        if DEBUG_MODE: st.sidebar.info(f"  > Menggunakan kolom SKU: '{col_sku}'")
+
         col_qty = next((c for c in df_raw.columns if any(x in c for x in ['jumlah','quantity'])), 'Jumlah')
         col_ord = next((c for c in df_raw.columns if any(x in c for x in ['pesanan','order','invoice'])), 'Order ID')
 
@@ -323,13 +334,13 @@ if st.sidebar.button("🚀 PROSES DATA", type="primary"):
                         
                         if err: st.warning(err)
                         
-                        # TABS
-                        t1, t2, t3 = st.tabs(["📋 Picking List", "📦 Stock Summary", "🔍 Validasi Kurir"])
+                        # --- UPDATED TAB NAMES ---
+                        t1, t2, t3 = st.tabs(["📋 Order Detail", "📦 Picking List-PRINT", "🔍 Validasi Kurir"])
                         
                         with t1:
                             if not res['detail'].empty:
                                 st.dataframe(res['detail'], use_container_width=True)
-                            else: st.info("Tidak ada data picking list.")
+                            else: st.info("Tidak ada data.")
                         
                         with t2:
                             if not res['summary'].empty:
@@ -338,22 +349,25 @@ if st.sidebar.button("🚀 PROSES DATA", type="primary"):
                             else: st.info("Tidak ada summary.")
 
                         with t3:
-                            st.markdown("### 🔍 Cek Total Order per Kurir (Data Mentah)")
-                            st.caption("Data ini diambil sebelum filter status/resi. Gunakan untuk validasi jika ada order yang 'hilang'.")
+                            st.markdown("### 🔍 Cek Total Order per Kurir")
                             if not res['raw_stats'].empty:
-                                st.dataframe(res['raw_stats'], use_container_width=True)
+                                def color_coding(val):
+                                    if '✅' in val: return 'background-color: #d4edda; color: #155724'
+                                    if '⚠️' in val: return 'background-color: #fff3cd; color: #856404'
+                                    return ''
+                                st.dataframe(res['raw_stats'].style.applymap(color_coding, subset=['Status Sistem']), use_container_width=True)
                             else: st.info("Tidak ada data statistik kurir.")
                         
-                        # Download Logic
                         if not res['detail'].empty:
                             buf = io.BytesIO()
                             with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
-                                res['detail'].to_excel(writer, sheet_name='Picking List', index=False)
-                                res['summary'].to_excel(writer, sheet_name='Stock Check', index=False)
+                                # --- UPDATED SHEET NAMES ---
+                                res['detail'].to_excel(writer, sheet_name='Order Detail', index=False)
+                                res['summary'].to_excel(writer, sheet_name='Picking List-PRINT', index=False)
+                                
                                 if not res['raw_stats'].empty:
                                     res['raw_stats'].to_excel(writer, sheet_name='Validasi Kurir', index=False)
                                 
-                                # Auto width
                                 for sheet in writer.sheets.values():
                                     sheet.set_column(0, 5, 20)
 
@@ -369,4 +383,4 @@ if st.sidebar.button("🚀 PROSES DATA", type="primary"):
                     st.error(f"❌ System Error: {e}")
 
 st.sidebar.markdown("---")
-st.sidebar.caption("v3.2 - Validation Tab Added")
+st.sidebar.caption("v3.6 - Final Sheet Names Updated")
