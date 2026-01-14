@@ -125,11 +125,10 @@ def load_kamus_from_gsheet():
                 st.sidebar.info(f"Preview {sheet_name} (3 baris pertama):")
                 st.sidebar.dataframe(df.head(3))
         
-        st.sidebar.success("✅ Semua kamus berhasil di-load dari Google Sheets")
         return kamus_data
         
     except Exception as e:
-        st.sidebar.error(f"❌ Gagal load kamus: {str(e)}")
+        st.error(f"❌ Gagal load kamus: {str(e)}")
         return None
 
 # --- FUNGSI CLEANING SKU ---
@@ -464,6 +463,8 @@ def process_universal_data(uploaded_files, kamus_data):
     return {'detail': df_detail, 'summary': df_summary, 'raw_stats': df_raw_stats}, None
 
 # --- UI STREAMLIT ---
+
+# --- Bagian Atas Sidebar (FIXED) ---
 st.sidebar.header("📁 Load Kamus dari Google Sheets")
 st.sidebar.markdown("**Nama Sheet yang dibutuhkan:**")
 st.sidebar.markdown("- Kurir-Shopee")
@@ -475,23 +476,32 @@ if st.sidebar.button("🔄 Load Kamus Sekarang", type="primary"):
         kamus_data = load_kamus_from_gsheet()
         if kamus_data:
             st.session_state['kamus_data'] = kamus_data
+            
+            # Tampilkan status success di bagian atas
             st.sidebar.success("✅ Kamus siap digunakan!")
             
-            # Tampilkan preview data
-            with st.sidebar.expander("📊 Preview Kamus", expanded=False):
+            # Tampilkan preview data di expander agar tidak memakan space banyak
+            with st.sidebar.expander("📊 Preview Kamus (Opsional)", expanded=False):
                 tab1, tab2, tab3 = st.tabs(["Kurir", "Bundle", "SKU"])
                 with tab1:
-                    st.dataframe(kamus_data['kurir'].head(5))
+                    st.dataframe(kamus_data['kurir'].head(3))
                 with tab2:
-                    st.dataframe(kamus_data['bundle'].head(5))
+                    st.dataframe(kamus_data['bundle'].head(3))
                 with tab3:
-                    st.dataframe(kamus_data['sku'].head(5))
+                    st.dataframe(kamus_data['sku'].head(3))
 
-st.sidebar.header("📁 Upload Order Marketplace")
+# --- Separator yang jelas ---
+st.sidebar.markdown("---")
+st.sidebar.markdown("## 📁 Upload Order Marketplace")
+
+# --- Bagian Upload File (PENTING - selalu visible) ---
+st.sidebar.markdown("**Upload file order dari marketplace:**")
 shp_off_f = st.sidebar.file_uploader("Shopee (Official)", key="so")
 shp_inh_f = st.sidebar.file_uploader("Shopee (INHOUSE)", key="si")
 tok_f = st.sidebar.file_uploader("Tokopedia", key="toped")
 
+# --- Tombol Proses Data (PENTING - selalu visible) ---
+st.sidebar.markdown("---")
 if st.sidebar.button("🚀 PROSES DATA", type="primary"):
     if 'kamus_data' not in st.session_state:
         st.error("❌ Kamus belum di-load! Klik tombol 'Load Kamus Sekarang' terlebih dahulu.")
@@ -567,10 +577,10 @@ if st.sidebar.button("🚀 PROSES DATA", type="primary"):
                         import traceback
                         st.error(f"Detail error: {traceback.format_exc()}")
 
+# --- Bagian Bawah Sidebar (optional info) ---
 st.sidebar.markdown("---")
-st.sidebar.caption("v3.8 - Google Sheets Integration dengan nama sheet spesifik")
 
-# Informasi troubleshooting
+# Informasi troubleshooting dalam expander agar tidak memakan space
 with st.sidebar.expander("❓ Troubleshooting"):
     st.markdown("""
     **Jika gagal load kamus:**
@@ -583,3 +593,13 @@ with st.sidebar.expander("❓ Troubleshooting"):
        - `SKU Master`
     4. Aktifkan Debug Mode untuk info detil
     """)
+
+st.sidebar.caption("v3.9 - Layout Optimized")
+
+# Menampilkan status kamus jika sudah di-load (opsional, bisa di-expand)
+if 'kamus_data' in st.session_state:
+    with st.sidebar.expander("📋 Status Kamus (Loaded)", expanded=False):
+        st.success("✅ Kamus sudah di-load")
+        st.info(f"Kurir: {len(st.session_state['kamus_data']['kurir'])} baris")
+        st.info(f"Bundle: {len(st.session_state['kamus_data']['bundle'])} baris")
+        st.info(f"SKU: {len(st.session_state['kamus_data']['sku'])} baris")
