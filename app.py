@@ -5,6 +5,8 @@ import io
 import time
 from datetime import datetime
 import warnings
+import gspread
+from google.oauth2 import service_account
 warnings.filterwarnings('ignore')
 
 # --- CONFIG ---
@@ -21,6 +23,92 @@ st.markdown("""
 # --- DEBUG MODE ---
 st.sidebar.header("🔧 Debug Mode")
 DEBUG_MODE = st.sidebar.checkbox("Tampilkan info detil (Debug)", value=False)
+
+# --- FUNGSI UNTUK LOAD KAMUS DARI GOOGLE SHEETS ---
+def load_kamus_from_gsheet():
+    """Membaca kamus dari Google Sheets"""
+    try:
+        # Load credentials from secrets
+        credentials_dict = {
+            "type": st.secrets["type"],
+            "project_id": st.secrets["project_id"],
+            "private_key_id": st.secrets["private_key_id"],
+            "private_key": st.secrets["private_key"].replace('\\n', '\n'),
+            "client_email": st.secrets["client_email"],
+            "client_id": st.secrets["client_id"],
+            "auth_uri": st.secrets["auth_uri"],
+            "token_uri": st.secrets["token_uri"],
+            "auth_provider_x509_cert_url": st.secrets["auth_provider_x509_cert_url"],
+            "client_x509_cert_url": st.secrets["client_x509_cert_url"],
+            "universe_domain": st.secrets["universe_domain"]
+        }
+        
+        # Create credentials
+        credentials = service_account.Credentials.from_service_account_info(
+            credentials_dict,
+            scopes=['https://www.googleapis.com/auth/spreadsheets']
+        )
+        
+        # Connect to Google Sheets
+        gc = gspread.authorize(credentials)
+        
+        # Open the spreadsheet (gunakan ID dari URL)
+        spreadsheet_id = "15c1uN2dVwMMT-bldZzRwVVExEau2ZgnI2_RgSIw7gG4"
+        spreadsheet = gc.open_by_key(spreadsheet_id)
+        
+        # Baca semua sheet yang diperlukan
+        kamus_data = {}
+        
+        # Sheet Kurir
+        kurir_sheet_names = ['Kurir', 'kurir', 'Courier', 'courier']
+        for sheet_name in kurir_sheet_names:
+            try:
+                worksheet = spreadsheet.worksheet(sheet_name)
+                data = worksheet.get_all_records()
+                if data:
+                    kamus_data['kurir'] = pd.DataFrame(data)
+                    break
+            except gspread.exceptions.WorksheetNotFound:
+                continue
+        
+        # Sheet Bundle/Kit
+        bundle_sheet_names = ['Bundle', 'bundle', 'Kit', 'kit', 'BOM']
+        for sheet_name in bundle_sheet_names:
+            try:
+                worksheet = spreadsheet.worksheet(sheet_name)
+                data = worksheet.get_all_records()
+                if data:
+                    kamus_data['bundle'] = pd.DataFrame(data)
+                    break
+            except gspread.exceptions.WorksheetNotFound:
+                continue
+        
+        # Sheet SKU
+        sku_sheet_names = ['SKU', 'sku', 'Product', 'product', 'Master SKU']
+        for sheet_name in sku_sheet_names:
+            try:
+                worksheet = spreadsheet.worksheet(sheet_name)
+                data = worksheet.get_all_records()
+                if data:
+                    kamus_data['sku'] = pd.DataFrame(data)
+                    break
+            except gspread.exceptions.WorksheetNotFound:
+                continue
+        
+        # Validasi semua sheet ditemukan
+        if len(kamus_data) < 3:
+            missing = []
+            if 'kurir' not in kamus_data: missing.append('Kurir')
+            if 'bundle' not in kamus_data: missing.append('Bundle')
+            if 'sku' not in kamus_data: missing.append('SKU')
+            raise Exception(f"Sheet tidak ditemukan: {', '.join(missing)}. Pastikan sheet dengan nama tersebut ada.")
+        
+        st.sidebar.success("✅ Kamus berhasil di-load dari Google Sheets")
+        return kamus_data
+        
+    except Exception as e:
+        st.sidebar.error(f"❌ Gagal load kamus: {str(e)}")
+        return None
 
 # --- FUNGSI CLEANING SKU ---
 def clean_sku(sku):
@@ -299,17 +387,21 @@ def process_universal_data(uploaded_files, kamus_data):
     return {'detail': df_detail, 'summary': df_summary, 'raw_stats': df_raw_stats}, None
 
 # --- UI STREAMLIT ---
-st.sidebar.header("📁 1. Upload Kamus")
-kamus_f = st.sidebar.file_uploader("Kamus.xlsx", key="k")
+st.sidebar.header("📁 Load Kamus dari Google Sheets")
+if st.sidebar.button("🔄 Load Kamus Sekarang"):
+    kamus_data = load_kamus_from_gsheet()
+    if kamus_data:
+        st.session_state['kamus_data'] = kamus_data
+        st.sidebar.success("✅ Kamus siap digunakan!")
 
-st.sidebar.header("📁 2. Upload Order")
+st.sidebar.header("📁 Upload Order Marketplace")
 shp_off_f = st.sidebar.file_uploader("Shopee (Official)", key="so")
 shp_inh_f = st.sidebar.file_uploader("Shopee (INHOUSE)", key="si")
 tok_f = st.sidebar.file_uploader("Tokopedia", key="toped")
 
 if st.sidebar.button("🚀 PROSES DATA", type="primary"):
-    if not kamus_f:
-        st.error("❌ Upload Kamus dulu!")
+    if 'kamus_data' not in st.session_state:
+        st.error("❌ Kamus belum di-load! Klik tombol 'Load Kamus Sekarang'")
     else:
         files = []
         if shp_off_f: files.append(('Shopee (Official)', shp_off_f))
@@ -321,66 +413,57 @@ if st.sidebar.button("🚀 PROSES DATA", type="primary"):
         else:
             with st.spinner("Processing..."):
                 try:
-                    k_xl = pd.ExcelFile(kamus_f)
-                    k_data = {}
-                    for key, keywords in [('kurir',['kurir','courier']), ('bundle',['bundle','kit']), ('sku',['sku','product'])]:
-                        sheet = next((s for s in k_xl.sheet_names if any(k in s.lower() for k in keywords)), None)
-                        if sheet: k_data[key] = pd.read_excel(k_xl, sheet_name=sheet, dtype=str)
+                    res, err = process_universal_data(files, st.session_state['kamus_data'])
                     
-                    if len(k_data) < 3:
-                        st.error("❌ Kamus tidak lengkap (Cek sheet Kurir, Bundle, SKU)")
-                    else:
-                        res, err = process_universal_data(files, k_data)
-                        
-                        if err: st.warning(err)
-                        
-                        # --- UPDATED TAB NAMES ---
-                        t1, t2, t3 = st.tabs(["📋 Order Detail", "📦 Picking List-PRINT", "🔍 Validasi Kurir"])
-                        
-                        with t1:
-                            if not res['detail'].empty:
-                                st.dataframe(res['detail'], use_container_width=True)
-                            else: st.info("Tidak ada data.")
-                        
-                        with t2:
-                            if not res['summary'].empty:
-                                st.metric("Total Qty", res['summary']['Qty Total'].sum())
-                                st.dataframe(res['summary'], use_container_width=True)
-                            else: st.info("Tidak ada summary.")
-
-                        with t3:
-                            st.markdown("### 🔍 Cek Total Order per Kurir")
-                            if not res['raw_stats'].empty:
-                                def color_coding(val):
-                                    if '✅' in val: return 'background-color: #d4edda; color: #155724'
-                                    if '⚠️' in val: return 'background-color: #fff3cd; color: #856404'
-                                    return ''
-                                st.dataframe(res['raw_stats'].style.applymap(color_coding, subset=['Status Sistem']), use_container_width=True)
-                            else: st.info("Tidak ada data statistik kurir.")
-                        
+                    if err: st.warning(err)
+                    
+                    # --- UPDATED TAB NAMES ---
+                    t1, t2, t3 = st.tabs(["📋 Order Detail", "📦 Picking List-PRINT", "🔍 Validasi Kurir"])
+                    
+                    with t1:
                         if not res['detail'].empty:
-                            buf = io.BytesIO()
-                            with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
-                                # --- UPDATED SHEET NAMES ---
-                                res['detail'].to_excel(writer, sheet_name='Order Detail', index=False)
-                                res['summary'].to_excel(writer, sheet_name='Picking List-PRINT', index=False)
-                                
-                                if not res['raw_stats'].empty:
-                                    res['raw_stats'].to_excel(writer, sheet_name='Validasi Kurir', index=False)
-                                
-                                for sheet in writer.sheets.values():
-                                    sheet.set_column(0, 5, 20)
+                            st.dataframe(res['detail'], use_container_width=True)
+                        else: st.info("Tidak ada data.")
+                    
+                    with t2:
+                        if not res['summary'].empty:
+                            st.metric("Total Qty", res['summary']['Qty Total'].sum())
+                            st.dataframe(res['summary'], use_container_width=True)
+                        else: st.info("Tidak ada summary.")
 
-                            st.download_button(
-                                "📥 Download Excel Report",
-                                data=buf.getvalue(),
-                                file_name=f"Report_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                type="primary"
-                            )
+                    with t3:
+                        st.markdown("### 🔍 Cek Total Order per Kurir")
+                        if not res['raw_stats'].empty:
+                            def color_coding(val):
+                                if '✅' in val: return 'background-color: #d4edda; color: #155724'
+                                if '⚠️' in val: return 'background-color: #fff3cd; color: #856404'
+                                return ''
+                            st.dataframe(res['raw_stats'].style.applymap(color_coding, subset=['Status Sistem']), use_container_width=True)
+                        else: st.info("Tidak ada data statistik kurir.")
+                    
+                    if not res['detail'].empty:
+                        buf = io.BytesIO()
+                        with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
+                            # --- UPDATED SHEET NAMES ---
+                            res['detail'].to_excel(writer, sheet_name='Order Detail', index=False)
+                            res['summary'].to_excel(writer, sheet_name='Picking List-PRINT', index=False)
+                            
+                            if not res['raw_stats'].empty:
+                                res['raw_stats'].to_excel(writer, sheet_name='Validasi Kurir', index=False)
+                            
+                            for sheet in writer.sheets.values():
+                                sheet.set_column(0, 5, 20)
+
+                        st.download_button(
+                            "📥 Download Excel Report",
+                            data=buf.getvalue(),
+                            file_name=f"Report_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            type="primary"
+                        )
 
                 except Exception as e:
                     st.error(f"❌ System Error: {e}")
 
 st.sidebar.markdown("---")
-st.sidebar.caption("v3.6 - Final Sheet Names Updated")
+st.sidebar.caption("v3.7 - Google Sheets Integration")
