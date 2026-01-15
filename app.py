@@ -24,7 +24,7 @@ st.markdown("""
 3. **Tokopedia**: Status='Perlu Dikirim'.
 4. **SKU Logic**: 
    - **Shopee (Official & INHOUSE)**: Hanya ambil dari **"Nomor Referensi SKU"**
-   - **Tokopedia**: Ambil dari kolom SKU
+   - **Tokopedia**: Tetap seperti sebelumnya (ambil dari kolom SKU)
 """)
 
 # --- SESSION STATE INIT ---
@@ -312,25 +312,19 @@ def process_universal_data(uploaded_files, kamus_data):
                     st.sidebar.warning(f"⚠️ {mp_type}: Tidak ada data yang lolos filter")
                 continue
             
-            # === CRITICAL: FIND SKU COLUMN BASED ON MP TYPE ===
+            # === FIND SKU COLUMN - LOGIC BERBEDA UNTUK SETIAP MARKETPLACE ===
             sku_col = None
             qty_col = None
             order_col = None
             
             if 'shopee' in mp_type.lower():
-                # SHOPEE: HARUS "nomor referensi sku" (case insensitive)
-                # Cari kolom yang persis mengandung "nomor referensi sku"
-                for col in df_filtered.columns:
-                    if 'nomor referensi sku' in col.lower():
-                        sku_col = col
-                        break
+                # === SHOPEE: HANYA AMBIL DARI "NOMOR REFERENSI SKU" ===
+                # Priority 1: "nomor referensi sku" (case insensitive)
+                sku_col = next((c for c in df_filtered.columns if 'nomor referensi sku' in c), None)
                 
+                # Priority 2: "referensi sku" (fallback)
                 if not sku_col:
-                    # Fallback: cari "referensi sku"
-                    for col in df_filtered.columns:
-                        if 'referensi sku' in col.lower():
-                            sku_col = col
-                            break
+                    sku_col = next((c for c in df_filtered.columns if 'referensi sku' in c), None)
                 
                 if DEBUG_MODE:
                     if sku_col:
@@ -343,13 +337,18 @@ def process_universal_data(uploaded_files, kamus_data):
                         st.sidebar.write(f"Available columns: {df_filtered.columns.tolist()}")
                         
             else:
-                # TOKOPEDIA: Ambil dari kolom SKU
-                sku_col = next((c for c in df_filtered.columns if 'sku' in c.lower()), None)
+                # === TOKOPEDIA: LOGIC TETAP SAMA SEPERTI SEBELUMNYA ===
+                # Priority 1: 'seller sku' atau 'nomor sku'
+                sku_col = next((c for c in df_filtered.columns if any(x in c for x in ['seller sku', 'nomor sku'])), None)
+                
+                # Priority 2: 'sku' (fallback)
+                if not sku_col:
+                    sku_col = next((c for c in df_filtered.columns if 'sku' in c), 'SKU')
                 
                 if DEBUG_MODE and sku_col:
                     st.sidebar.success(f"✅ Tokopedia SKU column found: '{sku_col}'")
             
-            # Find quantity and order columns
+            # Find quantity and order columns (SAMA UNTUK SEMUA MARKETPLACE)
             qty_col = next((c for c in df_filtered.columns if any(x in c for x in ['jumlah', 'quantity'])), None)
             order_col = next((c for c in df_filtered.columns if any(x in c for x in ['order', 'pesanan', 'invoice'])), None)
             
@@ -451,8 +450,8 @@ st.sidebar.markdown("---")
 st.sidebar.header("📁 2. Upload Order Files")
 st.sidebar.markdown("""
 **Format SKU:**
-- Shopee: **Hanya "Nomor Referensi SKU"**
-- Tokopedia: Kolom SKU
+- **Shopee**: **Hanya ambil dari "Nomor Referensi SKU"**
+- **Tokopedia**: Tetap seperti sebelumnya
 """)
 
 shp_off_f = st.sidebar.file_uploader("Shopee (Official)", type=['xlsx', 'xls', 'csv'], key="shopee_off")
@@ -515,7 +514,7 @@ if st.session_state.processed and st.session_state.results:
         # Create tabs
         tab1, tab2, tab3 = st.tabs([
             f"📋 Order Detail ({len(results['detail'])} rows)",
-            f"📦 Picking List ({len(results['summary'])} items)",
+            f"📦 Picking List-PRINT ({len(results['summary'])} items)",
             f"🔍 Validasi Kurir ({len(results['raw_stats'])} kurir)"
         ])
         
@@ -604,7 +603,7 @@ elif 'results' in st.session_state and st.session_state.results is None:
     st.info("ℹ️ Upload file dan klik 'PROSES DATA' untuk memulai.")
 
 st.sidebar.markdown("---")
-st.sidebar.caption(f"v4.1 • SKU Logic Fixed • {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+st.sidebar.caption(f"v4.2 • Shopee: SKU Logic Fixed • Tokped: Unchanged • {datetime.now().strftime('%d/%m/%Y %H:%M')}")
 
 # Info panel
 with st.sidebar.expander("ℹ️ Panduan SKU"):
@@ -616,7 +615,9 @@ with st.sidebar.expander("ℹ️ Panduan SKU"):
     - ❌ **Tidak ambil dari:** "Nama Produk", "Varian", "Seller SKU", dll
     
     **TOKOPEDIA:**
-    - ✅ **Ambil dari:** Kolom "SKU" atau "Seller SKU"
+    - ✅ **Tetap logic sebelumnya:**
+      1. Cari "seller sku" atau "nomor sku" dulu
+      2. Jika tidak ada, ambil dari kolom "sku"
     
     **Pastikan file Shopee memiliki kolom 'Nomor Referensi SKU'!**
     """)
