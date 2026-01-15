@@ -27,6 +27,12 @@ DEBUG_MODE = st.sidebar.checkbox("Tampilkan info detil (Debug)", value=False)
 # --- FUNGSI LOAD KAMUS ---
 def load_kamus_from_gsheet():
     try:
+        # Cek apakah secrets tersedia
+        if "type" not in st.secrets:
+            st.error("❌ Secrets belum dikonfigurasi di Streamlit Cloud!")
+            st.info("Buka Dashboard Streamlit > App Settings > Secrets, lalu paste isi JSON service account Anda.")
+            return None
+
         credentials_dict = {
             "type": st.secrets["type"],
             "project_id": st.secrets["project_id"],
@@ -147,21 +153,13 @@ def process_universal_data(uploaded_files, kamus_data):
         k_cols = {str(c).lower(): c for c in df_bundle.columns}
         
         # --- FIXED LOGIC: Strict Column Identification ---
-        # 1. Cari kolom KIT (Parent)
         kit_c = next((v for k,v in k_cols.items() if any(x in k for x in ['kit','bundle','parent'])), None)
-        
-        # 2. Cari kolom COMPONENT (Child) - Pastikan BUKAN kolom Kit
         comp_c = None
-        # Prioritas 1: Ada kata 'component' atau 'child'
         comp_c = next((v for k,v in k_cols.items() if any(x in k for x in ['component','child']) and v != kit_c), None)
-        # Prioritas 2: Ada kata 'sku' tapi BUKAN kolom kit
         if not comp_c:
              comp_c = next((v for k,v in k_cols.items() if 'sku' in k and v != kit_c), None)
              
         qty_c = next((v for k,v in k_cols.items() if any(x in k for x in ['qty','quantity'])), None)
-        
-        if DEBUG_MODE:
-            st.sidebar.info(f"Bundle Mapping -> Kit Col: {kit_c}, Comp Col: {comp_c}, Qty Col: {qty_c}")
         
         if kit_c and comp_c:
             for _, row in df_bundle.iterrows():
@@ -354,17 +352,18 @@ if st.sidebar.button("🚀 PROSES DATA", type="primary"):
                     if err: st.warning(err)
                     
                     t1, t2, t3 = st.tabs(["📋 Order Detail", "📦 Picking List-PRINT", "🔍 Validasi Kurir"])
-                    with t1: st.dataframe(res['detail'], use_container_width=True)
+                    # FIX: Menghapus use_container_width=True untuk kompatibilitas
+                    with t1: st.dataframe(res['detail']) 
                     with t2:
                         st.metric("Total Qty", res['summary']['Qty Total'].sum() if not res['summary'].empty else 0)
-                        st.dataframe(res['summary'], use_container_width=True)
+                        st.dataframe(res['summary'])
                     with t3:
                         if not res['raw_stats'].empty:
                             def color_coding(val):
                                 if '✅' in val: return 'background-color: #d4edda; color: #155724'
                                 if '⚠️' in val: return 'background-color: #fff3cd; color: #856404'
                                 return ''
-                            st.dataframe(res['raw_stats'].style.applymap(color_coding, subset=['Status Sistem']), use_container_width=True)
+                            st.dataframe(res['raw_stats'].style.applymap(color_coding, subset=['Status Sistem']))
                     
                     if not res['detail'].empty:
                         buf = io.BytesIO()
@@ -378,4 +377,4 @@ if st.sidebar.button("🚀 PROSES DATA", type="primary"):
                 except Exception as e:
                     st.error(f"❌ System Error: {e}")
 
-st.sidebar.caption("v3.10 - Fix Bundle Column Detection")
+st.sidebar.caption("v3.11 - Fix Warning & Secrets Check")
