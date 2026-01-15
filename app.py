@@ -57,17 +57,28 @@ def load_kamus_from_gsheet():
             try:
                 ws = spreadsheet.worksheet(sheet_name)
                 data = ws.get_all_records()
-                if data: kamus_data[key] = pd.DataFrame(data)
-                else: st.sidebar.warning(f"⚠️ Sheet {sheet_name} kosong")
+                if data: 
+                    kamus_data[key] = pd.DataFrame(data)
+                    if DEBUG_MODE:
+                        st.sidebar.info(f"✅ Sheet '{sheet_name}' loaded: {len(data)} rows")
+                else: 
+                    st.sidebar.warning(f"⚠️ Sheet '{sheet_name}' kosong")
+                    kamus_data[key] = pd.DataFrame()
             except gspread.exceptions.WorksheetNotFound:
                 st.error(f"❌ Sheet '{sheet_name}' tidak ditemukan!")
                 return None
 
-        if len(kamus_data) < 3: return None
+        if len(kamus_data) < 3: 
+            st.error("❌ Tidak semua sheet ditemukan!")
+            return None
+            
         return kamus_data
         
     except Exception as e:
         st.error(f"❌ Gagal load kamus: {str(e)}")
+        if DEBUG_MODE:
+            import traceback
+            st.error(f"Detail error: {traceback.format_exc()}")
         return None
 
 # --- FUNGSI CLEANING SKU ---
@@ -86,8 +97,11 @@ def load_data_smart(file_obj):
     filename = file_obj.name.lower()
     try:
         if filename.endswith('.xlsx') or filename.endswith('.xls'):
-            try: df = pd.read_excel(file_obj, dtype=str, header=None, engine='openpyxl')
-            except: df = None
+            try: 
+                df = pd.read_excel(file_obj, dtype=str, header=None, engine='openpyxl')
+            except Exception as e: 
+                if DEBUG_MODE: st.sidebar.warning(f"Excel read error: {e}")
+                df = None
         if df is None or df.shape[1] <= 1:
             file_obj.seek(0)
             encodings = ['utf-8-sig', 'utf-8', 'latin-1']
@@ -100,10 +114,14 @@ def load_data_smart(file_obj):
                         if temp_df.shape[1] > 1:
                             df = temp_df
                             break
-                    except: continue
-    except Exception as e: return None, f"Gagal baca file: {str(e)[:50]}"
+                    except Exception as e: 
+                        if DEBUG_MODE: st.sidebar.warning(f"CSV read error (enc={enc}, sep={sep}): {e}")
+                        continue
+    except Exception as e: 
+        return None, f"Gagal baca file: {str(e)[:50]}"
 
-    if df is None or df.empty: return None, "File kosong/format salah."
+    if df is None or df.empty: 
+        return None, "File kosong/format salah."
 
     header_idx = 0
     keywords = ['status', 'sku', 'order', 'pesanan', 'quantity', 'jumlah', 'product', 'opsi pengiriman']
@@ -120,7 +138,8 @@ def load_data_smart(file_obj):
         df_final.columns = [str(c).strip().replace('\n', ' ') for c in df_final.columns]
         df_final = df_final.dropna(how='all')
         return df_final, None
-    except Exception as e: return None, f"Gagal set header: {e}"
+    except Exception as e: 
+        return None, f"Gagal set header: {e}"
 
 # ==========================================
 # MAIN PROCESSOR
@@ -134,12 +153,23 @@ def process_universal_data(uploaded_files, kamus_data):
         df_bundle = kamus_data['bundle']
         df_sku = kamus_data['sku']
         
+        if DEBUG_MODE:
+            st.sidebar.info(f"Kurir shape: {df_kurir.shape}")
+            st.sidebar.info(f"Bundle shape: {df_bundle.shape}")
+            st.sidebar.info(f"SKU shape: {df_sku.shape}")
+            st.sidebar.info(f"Kurir columns: {df_kurir.columns.tolist()}")
+            st.sidebar.info(f"Bundle columns: {df_bundle.columns.tolist()}")
+            st.sidebar.info(f"SKU columns: {df_sku.columns.tolist()}")
+        
         bundle_map = {}
         k_cols = {str(c).lower(): c for c in df_bundle.columns}
         kit_c = next((v for k,v in k_cols.items() if any(x in k for x in ['kit','bundle','parent'])), None)
         comp_c = next((v for k,v in k_cols.items() if any(x in k for x in ['component','child']) and v != kit_c), None)
         if not comp_c: comp_c = next((v for k,v in k_cols.items() if 'sku' in k and v != kit_c), None)
         qty_c = next((v for k,v in k_cols.items() if any(x in k for x in ['qty','quantity'])), None)
+        
+        if DEBUG_MODE:
+            st.sidebar.info(f"Bundle mapping - Kit: {kit_c}, Component: {comp_c}, Qty: {qty_c}")
         
         if kit_c and comp_c:
             for _, row in df_bundle.iterrows():
@@ -150,21 +180,39 @@ def process_universal_data(uploaded_files, kamus_data):
                 if k_val and c_val:
                     if k_val not in bundle_map: bundle_map[k_val] = []
                     bundle_map[k_val].append((c_val, q_val))
+            
+            if DEBUG_MODE:
+                st.sidebar.info(f"Bundle mapping created: {len(bundle_map)} bundles")
+        else:
+            st.sidebar.warning("⚠️ Kolom untuk bundle mapping tidak lengkap")
 
         sku_name_map = {}
         for _, row in df_sku.iterrows():
             vals = [str(v).strip() for v in row if pd.notna(v) and str(v).strip()]
-            if len(vals) >= 2: sku_name_map[clean_sku(vals[0])] = vals[1]
+            if len(vals) >= 2: 
+                sku_name_map[clean_sku(vals[0])] = vals[1]
+        
+        if DEBUG_MODE:
+            st.sidebar.info(f"SKU mapping created: {len(sku_name_map)} SKUs")
 
         instant_list = []
         if not df_kurir.empty:
             ins_col = next((c for c in df_kurir.columns if 'instant' in str(c).lower()), None)
-            kur_col = df_kurir.columns[0]
-            if ins_col:
+            kur_col = df_kurir.columns[0] if not df_kurir.empty else None
+            if ins_col and kur_col:
                 instant_list = df_kurir[
                     df_kurir[ins_col].astype(str).str.lower().isin(['yes','ya','true','1'])
                 ][kur_col].astype(str).str.strip().tolist()
-    except Exception as e: return None, f"Error Kamus: {e}"
+                
+                if DEBUG_MODE:
+                    st.sidebar.info(f"Instant kurir list: {instant_list}")
+            else:
+                st.sidebar.warning("⚠️ Kolom instant tidak ditemukan di sheet Kurir")
+    except Exception as e: 
+        if DEBUG_MODE:
+            import traceback
+            st.sidebar.error(f"Error Kamus: {traceback.format_exc()}")
+        return None, f"Error Kamus: {e}"
 
     for mp_type, file_obj in uploaded_files:
         df_raw, err = load_data_smart(file_obj)
@@ -174,6 +222,9 @@ def process_universal_data(uploaded_files, kamus_data):
             
         df_filtered = pd.DataFrame()
         df_raw.columns = [str(c).strip().lower() for c in df_raw.columns]
+
+        if DEBUG_MODE:
+            st.sidebar.info(f"Processing {mp_type}: {df_raw.shape[0]} rows, columns: {df_raw.columns.tolist()}")
 
         # RAW STATS
         raw_kurir_col = None
@@ -200,35 +251,56 @@ def process_universal_data(uploaded_files, kamus_data):
             kurir_c = next((c for c in df_raw.columns if any(x in c for x in ['opsi','kirim'])), None)
             managed_c = next((c for c in df_raw.columns if 'dikelola' in c), None)
 
+            if DEBUG_MODE:
+                st.sidebar.info(f"Shopee Official columns - status: {status_c}, resi: {resi_c}, kurir: {kurir_c}, managed: {managed_c}")
+
             if all([status_c, resi_c, kurir_c]):
                 c1 = df_raw[status_c].astype(str).str.strip().str.lower() == 'perlu dikirim'
                 c2 = df_raw[resi_c].fillna('').astype(str).str.strip().isin(['','nan','none'])
                 c4 = df_raw[kurir_c].astype(str).str.strip().isin(instant_list)
                 c3 = df_raw[managed_c].astype(str).str.strip().str.lower() == 'no' if managed_c else True
                 df_filtered = df_raw[c1 & c2 & c3 & c4].copy()
-            else: st.error(f"Shopee Official: Kolom tidak lengkap!")
+                
+                if DEBUG_MODE:
+                    st.sidebar.info(f"Shopee Official filtered: {len(df_filtered)} rows")
+            else: 
+                st.error(f"Shopee Official: Kolom tidak lengkap!")
 
         elif mp_type == 'Shopee (INHOUSE)':
             status_c = next((c for c in df_raw.columns if 'status' in c), None)
             resi_c = next((c for c in df_raw.columns if 'resi' in c), None)
             kurir_c = next((c for c in df_raw.columns if any(x in c for x in ['opsi','kirim'])), None)
             
+            if DEBUG_MODE:
+                st.sidebar.info(f"Shopee INHOUSE columns - status: {status_c}, resi: {resi_c}, kurir: {kurir_c}")
+
             if all([status_c, resi_c, kurir_c]):
                 c1 = df_raw[status_c].astype(str).str.strip().str.lower() == 'perlu dikirim'
                 c2 = df_raw[resi_c].fillna('').astype(str).str.strip().isin(['','nan','none'])
                 c3 = df_raw[kurir_c].astype(str).str.strip().isin(instant_list)
                 df_filtered = df_raw[c1 & c2 & c3].copy()
-            else: st.error(f"Shopee Inhouse: Kolom tidak lengkap!")
+                
+                if DEBUG_MODE:
+                    st.sidebar.info(f"Shopee INHOUSE filtered: {len(df_filtered)} rows")
+            else: 
+                st.error(f"Shopee Inhouse: Kolom tidak lengkap!")
 
         elif mp_type == 'Tokopedia':
             status_c = next((c for c in df_raw.columns if 'status' in c), None)
             if status_c:
                 c1 = df_raw[status_c].astype(str).str.strip().str.lower() == 'perlu dikirim'
                 df_filtered = df_raw[c1].copy()
-            else: st.error("Tokopedia: Status tidak ditemukan")
+                
+                if DEBUG_MODE:
+                    st.sidebar.info(f"Tokopedia filtered: {len(df_filtered)} rows")
+            else: 
+                st.error("Tokopedia: Status tidak ditemukan")
 
         # MAPPING
-        if df_filtered.empty: continue
+        if df_filtered.empty: 
+            if DEBUG_MODE:
+                st.sidebar.warning(f"{mp_type}: Tidak ada data yang lolos filter")
+            continue
 
         col_sku = 'SKU'
         if 'shopee' in mp_type.lower():
@@ -242,14 +314,20 @@ def process_universal_data(uploaded_files, kamus_data):
         col_qty = next((c for c in df_raw.columns if any(x in c for x in ['jumlah','quantity'])), 'Jumlah')
         col_ord = next((c for c in df_raw.columns if any(x in c for x in ['pesanan','order','invoice'])), 'Order ID')
 
+        if DEBUG_MODE:
+            st.sidebar.info(f"Using columns - SKU: {col_sku}, Qty: {col_qty}, Order: {col_ord}")
+
         for _, row in df_filtered.iterrows():
             raw_sku = str(row.get(col_sku, ''))
             sku_clean = clean_sku(raw_sku)
             order_id = str(row.get(col_ord, ''))
-            try: qty = float(str(row.get(col_qty, 0)).replace(',', '.'))
-            except: qty = 0
+            try: 
+                qty = float(str(row.get(col_qty, 0)).replace(',', '.'))
+            except: 
+                qty = 0
             
-            if not sku_clean or qty <= 0: continue
+            if not sku_clean or qty <= 0: 
+                continue
             
             if sku_clean in bundle_map:
                 for comp_sku, comp_qty in bundle_map[sku_clean]:
@@ -281,6 +359,9 @@ def process_universal_data(uploaded_files, kamus_data):
     
     df_raw_stats = pd.concat(raw_stats_list, ignore_index=True) if raw_stats_list else pd.DataFrame()
     
+    if DEBUG_MODE:
+        st.sidebar.success(f"Processing complete: {len(df_detail)} detail rows, {len(df_summary)} summary rows")
+    
     return {'detail': df_detail, 'summary': df_summary, 'raw_stats': df_raw_stats}, None
 
 # --- UI STREAMLIT ---
@@ -293,6 +374,11 @@ if st.sidebar.button("🔄 Load Kamus Sekarang", type="primary"):
         if kamus_data:
             st.session_state['kamus_data'] = kamus_data
             st.sidebar.success("✅ Kamus Loaded!")
+            if DEBUG_MODE:
+                with st.sidebar.expander("View Kamus Data"):
+                    for key, df in kamus_data.items():
+                        st.write(f"**{key}** ({df.shape[0]} rows)")
+                        st.dataframe(df.head(3))
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("**Upload Order:**")
@@ -304,43 +390,79 @@ st.sidebar.markdown("---")
 if st.sidebar.button("🚀 PROSES DATA", type="primary"):
     if 'kamus_data' not in st.session_state:
         st.error("❌ Load Kamus dulu!")
-    else:
-        files = []
-        if shp_off_f: files.append(('Shopee (Official)', shp_off_f))
-        if shp_inh_f: files.append(('Shopee (INHOUSE)', shp_inh_f))
-        if tok_f: files.append(('Tokopedia', tok_f))
-        
-        if not files:
-            st.error("❌ Upload minimal satu file!")
-        else:
-            with st.spinner("Processing..."):
-                try:
-                    res, err = process_universal_data(files, st.session_state['kamus_data'])
+        st.stop()
+    
+    files = []
+    if shp_off_f: files.append(('Shopee (Official)', shp_off_f))
+    if shp_inh_f: files.append(('Shopee (INHOUSE)', shp_inh_f))
+    if tok_f: files.append(('Tokopedia', tok_f))
+    
+    if not files:
+        st.error("❌ Upload minimal satu file!")
+        st.stop()
+    
+    with st.spinner("Processing data..."):
+        try:
+            res, err = process_universal_data(files, st.session_state['kamus_data'])
+            
+            if err:
+                st.warning(f"⚠️ Error: {err}")
+            else:
+                # --- INI ADALAH BAGIAN YANG DIPERBAIKI ---
+                if not res['detail'].empty:
+                    # Buat tabs
+                    t1, t2, t3 = st.tabs(["📋 Order Detail", "📦 Picking List-PRINT", "🔍 Validasi Kurir"])
                     
-                    if err:
-                        st.warning(err)
-                    else: # INI YANG SEBELUMNYA HILANG
-                        t1, t2, t3 = st.tabs(["📋 Order Detail", "📦 Picking List-PRINT", "🔍 Validasi Kurir"])
-                        
-                        with t1: st.dataframe(res['detail'])
-                        with t2:
-                            if not res['summary'].empty:
-                                st.metric("Total Qty", res['summary']['Qty Total'].sum())
-                            st.dataframe(res['summary'])
-                        with t3:
-                            if not res['raw_stats'].empty:
-                                st.dataframe(res['raw_stats'])
+                    with t1: 
+                        st.dataframe(res['detail'], use_container_width=True)
+                    
+                    with t2:
+                        if not res['summary'].empty:
+                            st.metric("Total Qty", res['summary']['Qty Total'].sum())
+                        st.dataframe(res['summary'], use_container_width=True)
+                    
+                    with t3:
+                        if not res['raw_stats'].empty:
+                            st.dataframe(res['raw_stats'], use_container_width=True)
+                        else:
+                            st.info("Tidak ada data statistik kurir")
+                    
+                    # Download button
+                    buf = io.BytesIO()
+                    with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
+                        res['detail'].to_excel(writer, sheet_name='Order Detail', index=False)
+                        res['summary'].to_excel(writer, sheet_name='Picking List-PRINT', index=False)
+                        if not res['raw_stats'].empty: 
+                            res['raw_stats'].to_excel(writer, sheet_name='Validasi Kurir', index=False)
+                        for sheet in writer.sheets.values(): 
+                            sheet.set_column(0, 5, 20)
+                    
+                    st.download_button(
+                        "📥 Download Excel", 
+                        data=buf.getvalue(), 
+                        file_name=f"Report_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx", 
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
+                        type="primary"
+                    )
+                else:
+                    st.info("❌ Tidak ada data yang memenuhi kriteria. Coba cek:")
+                    st.markdown("""
+                    1. Pastikan file order berisi data dengan status 'Perlu Dikirim'
+                    2. Untuk Shopee, pastikan kurir termasuk dalam list instant
+                    3. Untuk Shopee, pastikan resi masih kosong
+                    4. Cek Debug Mode untuk info lebih detail
+                    """)
+                    
+        except Exception as e:
+            st.error(f"❌ System Error: {e}")
+            if DEBUG_MODE:
+                import traceback
+                st.error(f"Detail error: {traceback.format_exc()}")
 
-                        if not res['detail'].empty:
-                            buf = io.BytesIO()
-                            with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
-                                res['detail'].to_excel(writer, sheet_name='Order Detail', index=False)
-                                res['summary'].to_excel(writer, sheet_name='Picking List-PRINT', index=False)
-                                if not res['raw_stats'].empty: res['raw_stats'].to_excel(writer, sheet_name='Validasi Kurir', index=False)
-                                for sheet in writer.sheets.values(): sheet.set_column(0, 5, 20)
-                            st.download_button("📥 Download Excel", data=buf.getvalue(), file_name=f"Report_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
+st.sidebar.caption("v3.13 - Fixed Blank Screen Issue")
 
-                except Exception as e:
-                    st.error(f"❌ System Error: {e}")
-
-st.sidebar.caption("v3.12 - Fixed UI Crash Logic")
+# Status indicator
+if 'kamus_data' in st.session_state:
+    st.sidebar.success("✅ Kamus sudah di-load")
+else:
+    st.sidebar.warning("⚠️ Kamus belum di-load")
