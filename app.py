@@ -27,10 +27,8 @@ DEBUG_MODE = st.sidebar.checkbox("Tampilkan info detil (Debug)", value=False)
 # --- FUNGSI LOAD KAMUS ---
 def load_kamus_from_gsheet():
     try:
-        # Cek apakah secrets tersedia
         if "type" not in st.secrets:
             st.error("❌ Secrets belum dikonfigurasi di Streamlit Cloud!")
-            st.info("Buka Dashboard Streamlit > App Settings > Secrets, lalu paste isi JSON service account Anda.")
             return None
 
         credentials_dict = {
@@ -59,10 +57,8 @@ def load_kamus_from_gsheet():
             try:
                 ws = spreadsheet.worksheet(sheet_name)
                 data = ws.get_all_records()
-                if data:
-                    kamus_data[key] = pd.DataFrame(data)
-                else:
-                    st.sidebar.warning(f"⚠️ Sheet {sheet_name} kosong")
+                if data: kamus_data[key] = pd.DataFrame(data)
+                else: st.sidebar.warning(f"⚠️ Sheet {sheet_name} kosong")
             except gspread.exceptions.WorksheetNotFound:
                 st.error(f"❌ Sheet '{sheet_name}' tidak ditemukan!")
                 return None
@@ -80,43 +76,34 @@ def clean_sku(sku):
     sku = str(sku).strip()
     sku = ''.join(char for char in sku if ord(char) >= 32)
     sku_upper = sku.upper()
-    if sku_upper.startswith('FG-') or sku_upper.startswith('CS-'):
-        return sku
-    if '-' in sku:
-        return sku.split('-', 1)[-1].strip()
+    if sku_upper.startswith('FG-') or sku_upper.startswith('CS-'): return sku
+    if '-' in sku: return sku.split('-', 1)[-1].strip()
     return sku
 
 # --- FUNGSI SMART LOADER ---
 def load_data_smart(file_obj):
     df = None
     filename = file_obj.name.lower()
-    
     try:
         if filename.endswith('.xlsx') or filename.endswith('.xls'):
             try: df = pd.read_excel(file_obj, dtype=str, header=None, engine='openpyxl')
             except: df = None
-
         if df is None or df.shape[1] <= 1:
             file_obj.seek(0)
             encodings = ['utf-8-sig', 'utf-8', 'latin-1']
-            separators = [',', ';', '\t']
             for enc in encodings:
                 if df is not None and df.shape[1] > 1: break
-                for sep in separators:
+                for sep in [',', ';', '\t']:
                     try:
                         file_obj.seek(0)
-                        temp_df = pd.read_csv(
-                            file_obj, sep=sep, dtype=str, header=None, 
-                            encoding=enc, on_bad_lines='skip', quotechar='"'
-                        )
+                        temp_df = pd.read_csv(file_obj, sep=sep, dtype=str, header=None, encoding=enc, on_bad_lines='skip', quotechar='"')
                         if temp_df.shape[1] > 1:
                             df = temp_df
                             break
                     except: continue
+    except Exception as e: return None, f"Gagal baca file: {str(e)[:50]}"
 
-    except Exception as e: return None, f"Gagal membaca file: {str(e)[:100]}"
-
-    if df is None or df.empty: return None, "File kosong atau format tidak dikenali."
+    if df is None or df.empty: return None, "File kosong/format salah."
 
     header_idx = 0
     keywords = ['status', 'sku', 'order', 'pesanan', 'quantity', 'jumlah', 'product', 'opsi pengiriman']
@@ -142,33 +129,24 @@ def process_universal_data(uploaded_files, kamus_data):
     all_rows = []
     raw_stats_list = []
     
-    # 1. PREPARE KAMUS & BUNDLE MAP
     try:
         df_kurir = kamus_data['kurir']
         df_bundle = kamus_data['bundle']
         df_sku = kamus_data['sku']
         
         bundle_map = {}
-        # Kolom mapping (Lowercase)
         k_cols = {str(c).lower(): c for c in df_bundle.columns}
-        
-        # --- FIXED LOGIC: Strict Column Identification ---
         kit_c = next((v for k,v in k_cols.items() if any(x in k for x in ['kit','bundle','parent'])), None)
-        comp_c = None
         comp_c = next((v for k,v in k_cols.items() if any(x in k for x in ['component','child']) and v != kit_c), None)
-        if not comp_c:
-             comp_c = next((v for k,v in k_cols.items() if 'sku' in k and v != kit_c), None)
-             
+        if not comp_c: comp_c = next((v for k,v in k_cols.items() if 'sku' in k and v != kit_c), None)
         qty_c = next((v for k,v in k_cols.items() if any(x in k for x in ['qty','quantity'])), None)
         
         if kit_c and comp_c:
             for _, row in df_bundle.iterrows():
                 k_val = clean_sku(row[kit_c])
                 c_val = clean_sku(row[comp_c])
-                
                 try: q_val = float(str(row[qty_c]).replace(',', '.')) if qty_c else 1.0
                 except: q_val = 1.0
-                
                 if k_val and c_val:
                     if k_val not in bundle_map: bundle_map[k_val] = []
                     bundle_map[k_val].append((c_val, q_val))
@@ -186,10 +164,8 @@ def process_universal_data(uploaded_files, kamus_data):
                 instant_list = df_kurir[
                     df_kurir[ins_col].astype(str).str.lower().isin(['yes','ya','true','1'])
                 ][kur_col].astype(str).str.strip().tolist()
-
     except Exception as e: return None, f"Error Kamus: {e}"
 
-    # 2. PROCESS FILES
     for mp_type, file_obj in uploaded_files:
         df_raw, err = load_data_smart(file_obj)
         if err:
@@ -199,7 +175,7 @@ def process_universal_data(uploaded_files, kamus_data):
         df_filtered = pd.DataFrame()
         df_raw.columns = [str(c).strip().lower() for c in df_raw.columns]
 
-        # --- A. RAW STATS ---
+        # RAW STATS
         raw_kurir_col = None
         if 'shopee' in mp_type.lower():
             raw_kurir_col = next((c for c in df_raw.columns if any(x in c for x in ['opsi','kirim'])), None)
@@ -212,20 +188,12 @@ def process_universal_data(uploaded_files, kamus_data):
             stats = df_raw[raw_kurir_col].fillna('BLANK').value_counts().reset_index()
             stats.columns = ['Jenis Kurir', 'Jumlah Order (Raw)']
             stats['Sumber Data'] = mp_type
-            
-            def check_status(k_name):
-                k_name = str(k_name).strip()
-                if k_name in instant_list: return '✅ Whitelisted'
-                k_lower = k_name.lower()
-                if 'instant' in k_lower or 'same' in k_lower: return '⚠️ Kemungkinan Instant'
-                return '❌ Non-Instant'
-                
-            stats['Status Sistem'] = stats['Jenis Kurir'].apply(check_status)
+            stats['Status Sistem'] = stats['Jenis Kurir'].apply(lambda x: '✅ Whitelisted' if str(x).strip() in instant_list else ('⚠️ Kemungkinan Instant' if 'instant' in str(x).lower() or 'same' in str(x).lower() else '❌ Non-Instant'))
             raw_stats_list.append(stats)
         else:
             raw_stats_list.append(pd.DataFrame({'Sumber Data': [mp_type], 'Jenis Kurir': ['(Not Found)'], 'Jumlah Order (Raw)': [len(df_raw)], 'Status Sistem': ['-']}))
 
-        # --- B. FILTERING LOGIC ---
+        # FILTERING
         if mp_type == 'Shopee (Official)':
             status_c = next((c for c in df_raw.columns if 'status' in c), None)
             resi_c = next((c for c in df_raw.columns if 'resi' in c), None)
@@ -259,7 +227,7 @@ def process_universal_data(uploaded_files, kamus_data):
                 df_filtered = df_raw[c1].copy()
             else: st.error("Tokopedia: Status tidak ditemukan")
 
-        # --- C. MAPPING SKU ---
+        # MAPPING
         if df_filtered.empty: continue
 
         col_sku = 'SKU'
@@ -305,7 +273,6 @@ def process_universal_data(uploaded_files, kamus_data):
                     'Qty Total': qty
                 })
 
-    # FINAL RESULTS
     df_detail = pd.DataFrame(all_rows)
     df_summary = pd.DataFrame()
     if not df_detail.empty:
@@ -349,32 +316,31 @@ if st.sidebar.button("🚀 PROSES DATA", type="primary"):
             with st.spinner("Processing..."):
                 try:
                     res, err = process_universal_data(files, st.session_state['kamus_data'])
-                    if err: st.warning(err)
                     
-                    t1, t2, t3 = st.tabs(["📋 Order Detail", "📦 Picking List-PRINT", "🔍 Validasi Kurir"])
-                    # FIX: Menghapus use_container_width=True untuk kompatibilitas
-                    with t1: st.dataframe(res['detail']) 
-                    with t2:
-                        st.metric("Total Qty", res['summary']['Qty Total'].sum() if not res['summary'].empty else 0)
-                        st.dataframe(res['summary'])
-                    with t3:
-                        if not res['raw_stats'].empty:
-                            def color_coding(val):
-                                if '✅' in val: return 'background-color: #d4edda; color: #155724'
-                                if '⚠️' in val: return 'background-color: #fff3cd; color: #856404'
-                                return ''
-                            st.dataframe(res['raw_stats'].style.applymap(color_coding, subset=['Status Sistem']))
-                    
-                    if not res['detail'].empty:
-                        buf = io.BytesIO()
-                        with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
-                            res['detail'].to_excel(writer, sheet_name='Order Detail', index=False)
-                            res['summary'].to_excel(writer, sheet_name='Picking List-PRINT', index=False)
-                            if not res['raw_stats'].empty: res['raw_stats'].to_excel(writer, sheet_name='Validasi Kurir', index=False)
-                            for sheet in writer.sheets.values(): sheet.set_column(0, 5, 20)
-                        st.download_button("📥 Download Excel", data=buf.getvalue(), file_name=f"Report_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
+                    if err:
+                        st.warning(err)
+                    else: # INI YANG SEBELUMNYA HILANG
+                        t1, t2, t3 = st.tabs(["📋 Order Detail", "📦 Picking List-PRINT", "🔍 Validasi Kurir"])
+                        
+                        with t1: st.dataframe(res['detail'])
+                        with t2:
+                            if not res['summary'].empty:
+                                st.metric("Total Qty", res['summary']['Qty Total'].sum())
+                            st.dataframe(res['summary'])
+                        with t3:
+                            if not res['raw_stats'].empty:
+                                st.dataframe(res['raw_stats'])
+
+                        if not res['detail'].empty:
+                            buf = io.BytesIO()
+                            with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
+                                res['detail'].to_excel(writer, sheet_name='Order Detail', index=False)
+                                res['summary'].to_excel(writer, sheet_name='Picking List-PRINT', index=False)
+                                if not res['raw_stats'].empty: res['raw_stats'].to_excel(writer, sheet_name='Validasi Kurir', index=False)
+                                for sheet in writer.sheets.values(): sheet.set_column(0, 5, 20)
+                            st.download_button("📥 Download Excel", data=buf.getvalue(), file_name=f"Report_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
 
                 except Exception as e:
                     st.error(f"❌ System Error: {e}")
 
-st.sidebar.caption("v3.11 - Fix Warning & Secrets Check")
+st.sidebar.caption("v3.12 - Fixed UI Crash Logic")
