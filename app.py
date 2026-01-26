@@ -208,201 +208,199 @@ def process_universal_data(uploaded_files, kamus_data):
                     st.sidebar.write(f"Instant kurir list: {instant_list}")
         
         # Process each file
-        for mp_type, file_obj in uploaded_files:
-            df_raw, err = load_data_smart(file_obj)
-            if err:
-                st.sidebar.warning(f"⚠️ {mp_type}: {err}")
-                continue
-            
-            if DEBUG_MODE:
-                st.sidebar.write(f"📁 Processing {mp_type} - Original columns:")
-                st.sidebar.write(df_raw.columns.tolist())
-            
-            # Convert column names to lowercase for matching
-            original_columns = {str(c): c for c in df_raw.columns}  # Simpan mapping original
-            df_raw.columns = [str(c).strip().lower() for c in df_raw.columns]
-            
-            # Find kurir column for stats
-            kurir_col = None
-            if 'shopee' in mp_type.lower():
-                kurir_col = next((c for c in df_raw.columns if any(x in c for x in ['opsi','kirim'])), None)
-            elif 'tokopedia' in mp_type.lower():
-                kurir_col = next((c for c in df_raw.columns if any(x in c for x in ['kurir','shipping','delivery'])), None)
-            
-            # Create stats
-            if kurir_col and kurir_col in df_raw.columns:
-                stats = df_raw[kurir_col].fillna('BLANK').value_counts().reset_index()
-                stats.columns = ['Jenis Kurir', 'Jumlah Order (Raw)']
-                stats['Sumber Data'] = mp_type
-                stats['Status Sistem'] = stats['Jenis Kurir'].apply(
-                    lambda x: '✅ Whitelisted' if str(x).strip() in instant_list 
-                    else ('⚠️ Kemungkinan Instant' if any(kw in str(x).lower() for kw in ['instant', 'same']) 
-                    else '❌ Non-Instant')
-                )
-                raw_stats_list.append(stats)
-            
-            # Filter based on marketplace
-            df_filtered = pd.DataFrame()
-            
-            if mp_type == 'Shopee (Official)':
-                status_col = next((c for c in df_raw.columns if 'status' in c), None)
-                resi_col = next((c for c in df_raw.columns if 'resi' in c), None)
-                kurir_col = next((c for c in df_raw.columns if any(x in c for x in ['opsi','kirim'])), None)
-                managed_col = next((c for c in df_raw.columns if 'dikelola' in c), None)
+        for mp_type, file_objs in uploaded_files:
+            for file_idx, file_obj in enumerate(file_objs):
+                file_display_name = f"{mp_type} - File {file_idx+1}: {file_obj.name}"
                 
                 if DEBUG_MODE:
-                    st.sidebar.write(f"Shopee Official columns found:")
-                    st.sidebar.write(f"- Status: {status_col}")
-                    st.sidebar.write(f"- Resi: {resi_col}")
-                    st.sidebar.write(f"- Kurir: {kurir_col}")
-                    st.sidebar.write(f"- Managed: {managed_col}")
+                    st.sidebar.write(f"📁 Processing {file_display_name}")
                 
-                if all([status_col, resi_col, kurir_col]):
-                    # Filter conditions
-                    c1 = df_raw[status_col].astype(str).str.strip().str.lower() == 'perlu dikirim'
-                    c2 = df_raw[resi_col].fillna('').astype(str).str.strip().isin(['', 'nan', 'none'])
-                    c3 = df_raw[kurir_col].astype(str).str.strip().isin(instant_list)
-                    
-                    if managed_col:
-                        c4 = df_raw[managed_col].astype(str).str.strip().str.lower() == 'no'
-                        df_filtered = df_raw[c1 & c2 & c3 & c4].copy()
-                    else:
-                        df_filtered = df_raw[c1 & c2 & c3].copy()
-                    
-                    if DEBUG_MODE:
-                        st.sidebar.write(f"Shopee Official filtered: {len(df_filtered)} rows")
-                        if len(df_filtered) > 0:
-                            st.sidebar.write("Sample filtered rows:")
-                            st.sidebar.dataframe(df_filtered.head(3))
-                    
-            elif mp_type == 'Shopee (INHOUSE)':
-                status_col = next((c for c in df_raw.columns if 'status' in c), None)
-                resi_col = next((c for c in df_raw.columns if 'resi' in c), None)
-                kurir_col = next((c for c in df_raw.columns if any(x in c for x in ['opsi','kirim'])), None)
-                
-                if DEBUG_MODE:
-                    st.sidebar.write(f"Shopee INHOUSE columns found:")
-                    st.sidebar.write(f"- Status: {status_col}")
-                    st.sidebar.write(f"- Resi: {resi_col}")
-                    st.sidebar.write(f"- Kurir: {kurir_col}")
-                
-                if all([status_col, resi_col, kurir_col]):
-                    mask = (
-                        (df_raw[status_col].astype(str).str.strip().str.lower() == 'perlu dikirim') &
-                        (df_raw[resi_col].fillna('').astype(str).str.strip().isin(['', 'nan', 'none'])) &
-                        (df_raw[kurir_col].astype(str).str.strip().isin(instant_list))
-                    )
-                    df_filtered = df_raw[mask].copy()
-                    
-                    if DEBUG_MODE:
-                        st.sidebar.write(f"Shopee INHOUSE filtered: {len(df_filtered)} rows")
-                    
-            elif mp_type == 'Tokopedia':
-                status_col = next((c for c in df_raw.columns if 'status' in c), None)
-                if status_col:
-                    mask = df_raw[status_col].astype(str).str.strip().str.lower() == 'perlu dikirim'
-                    df_filtered = df_raw[mask].copy()
-                    
-                    if DEBUG_MODE:
-                        st.sidebar.write(f"Tokopedia filtered: {len(df_filtered)} rows")
-            
-            # Skip if no data
-            if df_filtered.empty:
-                if DEBUG_MODE:
-                    st.sidebar.warning(f"⚠️ {mp_type}: Tidak ada data yang lolos filter")
-                continue
-            
-            # === FIND SKU COLUMN - LOGIC BERBEDA UNTUK SETIAP MARKETPLACE ===
-            sku_col = None
-            qty_col = None
-            order_col = None
-            
-            if 'shopee' in mp_type.lower():
-                # === SHOPEE: HANYA AMBIL DARI "NOMOR REFERENSI SKU" ===
-                # Priority 1: "nomor referensi sku" (case insensitive)
-                sku_col = next((c for c in df_filtered.columns if 'nomor referensi sku' in c), None)
-                
-                # Priority 2: "referensi sku" (fallback)
-                if not sku_col:
-                    sku_col = next((c for c in df_filtered.columns if 'referensi sku' in c), None)
-                
-                if DEBUG_MODE:
-                    if sku_col:
-                        st.sidebar.success(f"✅ Shopee SKU column found: '{sku_col}'")
-                        # Show sample SKU values
-                        unique_skus = df_filtered[sku_col].dropna().unique()[:5]
-                        st.sidebar.write(f"Sample SKUs: {list(unique_skus)}")
-                    else:
-                        st.sidebar.error(f"❌ Shopee: Kolom 'Nomor Referensi SKU' tidak ditemukan!")
-                        st.sidebar.write(f"Available columns: {df_filtered.columns.tolist()}")
-                        
-            else:
-                # === TOKOPEDIA: LOGIC TETAP SAMA SEPERTI SEBELUMNYA ===
-                # Priority 1: 'seller sku' atau 'nomor sku'
-                sku_col = next((c for c in df_filtered.columns if any(x in c for x in ['seller sku', 'nomor sku'])), None)
-                
-                # Priority 2: 'sku' (fallback)
-                if not sku_col:
-                    sku_col = next((c for c in df_filtered.columns if 'sku' in c), 'SKU')
-                
-                if DEBUG_MODE and sku_col:
-                    st.sidebar.success(f"✅ Tokopedia SKU column found: '{sku_col}'")
-            
-            # Find quantity and order columns (SAMA UNTUK SEMUA MARKETPLACE)
-            qty_col = next((c for c in df_filtered.columns if any(x in c for x in ['jumlah', 'quantity'])), None)
-            order_col = next((c for c in df_filtered.columns if any(x in c for x in ['order', 'pesanan', 'invoice'])), None)
-            
-            if DEBUG_MODE:
-                st.sidebar.write(f"Columns identified - SKU: {sku_col}, Qty: {qty_col}, Order: {order_col}")
-            
-            if not all([sku_col, qty_col, order_col]):
-                st.sidebar.warning(f"⚠️ {mp_type}: Kolom tidak lengkap. SKU: {sku_col}, Qty: {qty_col}, Order: {order_col}")
-                continue
-            
-            # Process rows
-            for idx, row in df_filtered.iterrows():
-                raw_sku = str(row[sku_col]) if pd.notna(row[sku_col]) else ''
-                sku_clean = clean_sku(raw_sku)
-                order_id = str(row[order_col]) if pd.notna(row[order_col]) else ''
-                
-                try:
-                    qty = float(str(row[qty_col]).replace(',', '.')) if pd.notna(row[qty_col]) else 0
-                except:
-                    qty = 0
-                
-                if DEBUG_MODE and idx < 3:  # Show first 3 rows
-                    st.sidebar.write(f"Row {idx}: SKU='{raw_sku}' -> Clean='{sku_clean}', Qty={qty}")
-                
-                if not sku_clean or qty <= 0:
+                df_raw, err = load_data_smart(file_obj)
+                if err:
+                    st.sidebar.warning(f"⚠️ {file_display_name}: {err}")
                     continue
                 
-                if sku_clean in bundle_map:
-                    for comp_sku, comp_qty in bundle_map[sku_clean]:
+                if DEBUG_MODE:
+                    st.sidebar.write(f"Original columns for {file_display_name}:")
+                    st.sidebar.write(df_raw.columns.tolist())
+                
+                # Convert column names to lowercase for matching
+                df_raw.columns = [str(c).strip().lower() for c in df_raw.columns]
+                
+                # Find kurir column for stats
+                kurir_col = None
+                if 'shopee' in mp_type.lower():
+                    kurir_col = next((c for c in df_raw.columns if any(x in c for x in ['opsi','kirim'])), None)
+                elif 'tokopedia' in mp_type.lower():
+                    kurir_col = next((c for c in df_raw.columns if any(x in c for x in ['kurir','shipping','delivery'])), None)
+                
+                # Create stats for this file
+                if kurir_col and kurir_col in df_raw.columns:
+                    stats = df_raw[kurir_col].fillna('BLANK').value_counts().reset_index()
+                    stats.columns = ['Jenis Kurir', 'Jumlah Order (Raw)']
+                    stats['Sumber Data'] = f"{mp_type} - {file_obj.name}"
+                    stats['Status Sistem'] = stats['Jenis Kurir'].apply(
+                        lambda x: '✅ Whitelisted' if str(x).strip() in instant_list 
+                        else ('⚠️ Kemungkinan Instant' if any(kw in str(x).lower() for kw in ['instant', 'same']) 
+                        else '❌ Non-Instant')
+                    )
+                    raw_stats_list.append(stats)
+                
+                # Filter based on marketplace
+                df_filtered = pd.DataFrame()
+                
+                if mp_type == 'Shopee (Official)':
+                    status_col = next((c for c in df_raw.columns if 'status' in c), None)
+                    resi_col = next((c for c in df_raw.columns if 'resi' in c), None)
+                    kurir_col = next((c for c in df_raw.columns if any(x in c for x in ['opsi','kirim'])), None)
+                    managed_col = next((c for c in df_raw.columns if 'dikelola' in c), None)
+                    
+                    if DEBUG_MODE:
+                        st.sidebar.write(f"{file_display_name} columns found:")
+                        st.sidebar.write(f"- Status: {status_col}")
+                        st.sidebar.write(f"- Resi: {resi_col}")
+                        st.sidebar.write(f"- Kurir: {kurir_col}")
+                        st.sidebar.write(f"- Managed: {managed_col}")
+                    
+                    if all([status_col, resi_col, kurir_col]):
+                        # Filter conditions
+                        c1 = df_raw[status_col].astype(str).str.strip().str.lower() == 'perlu dikirim'
+                        c2 = df_raw[resi_col].fillna('').astype(str).str.strip().isin(['', 'nan', 'none'])
+                        c3 = df_raw[kurir_col].astype(str).str.strip().isin(instant_list)
+                        
+                        if managed_col:
+                            c4 = df_raw[managed_col].astype(str).str.strip().str.lower() == 'no'
+                            df_filtered = df_raw[c1 & c2 & c3 & c4].copy()
+                        else:
+                            df_filtered = df_raw[c1 & c2 & c3].copy()
+                        
+                        if DEBUG_MODE:
+                            st.sidebar.write(f"{file_display_name} filtered: {len(df_filtered)} rows")
+                    
+                elif mp_type == 'Shopee (INHOUSE)':
+                    status_col = next((c for c in df_raw.columns if 'status' in c), None)
+                    resi_col = next((c for c in df_raw.columns if 'resi' in c), None)
+                    kurir_col = next((c for c in df_raw.columns if any(x in c for x in ['opsi','kirim'])), None)
+                    
+                    if DEBUG_MODE:
+                        st.sidebar.write(f"{file_display_name} columns found:")
+                        st.sidebar.write(f"- Status: {status_col}")
+                        st.sidebar.write(f"- Resi: {resi_col}")
+                        st.sidebar.write(f"- Kurir: {kurir_col}")
+                    
+                    if all([status_col, resi_col, kurir_col]):
+                        mask = (
+                            (df_raw[status_col].astype(str).str.strip().str.lower() == 'perlu dikirim') &
+                            (df_raw[resi_col].fillna('').astype(str).str.strip().isin(['', 'nan', 'none'])) &
+                            (df_raw[kurir_col].astype(str).str.strip().isin(instant_list))
+                        )
+                        df_filtered = df_raw[mask].copy()
+                        
+                        if DEBUG_MODE:
+                            st.sidebar.write(f"{file_display_name} filtered: {len(df_filtered)} rows")
+                        
+                elif mp_type == 'Tokopedia':
+                    status_col = next((c for c in df_raw.columns if 'status' in c), None)
+                    if status_col:
+                        mask = df_raw[status_col].astype(str).str.strip().str.lower() == 'perlu dikirim'
+                        df_filtered = df_raw[mask].copy()
+                        
+                        if DEBUG_MODE:
+                            st.sidebar.write(f"{file_display_name} filtered: {len(df_filtered)} rows")
+                
+                # Skip if no data
+                if df_filtered.empty:
+                    if DEBUG_MODE:
+                        st.sidebar.warning(f"⚠️ {file_display_name}: Tidak ada data yang lolos filter")
+                    continue
+                
+                # === FIND SKU COLUMN - LOGIC BERBEDA UNTUK SETIAP MARKETPLACE ===
+                sku_col = None
+                qty_col = None
+                order_col = None
+                
+                if 'shopee' in mp_type.lower():
+                    # === SHOPEE: HANYA AMBIL DARI "NOMOR REFERENSI SKU" ===
+                    # Priority 1: "nomor referensi sku" (case insensitive)
+                    sku_col = next((c for c in df_filtered.columns if 'nomor referensi sku' in c), None)
+                    
+                    # Priority 2: "referensi sku" (fallback)
+                    if not sku_col:
+                        sku_col = next((c for c in df_filtered.columns if 'referensi sku' in c), None)
+                    
+                    if DEBUG_MODE:
+                        if sku_col:
+                            st.sidebar.success(f"✅ {file_display_name}: SKU column found: '{sku_col}'")
+                        else:
+                            st.sidebar.error(f"❌ {file_display_name}: Kolom 'Nomor Referensi SKU' tidak ditemukan!")
+                            
+                else:
+                    # === TOKOPEDIA: LOGIC TETAP SAMA SEPERTI SEBELUMNYA ===
+                    # Priority 1: 'seller sku' atau 'nomor sku'
+                    sku_col = next((c for c in df_filtered.columns if any(x in c for x in ['seller sku', 'nomor sku'])), None)
+                    
+                    # Priority 2: 'sku' (fallback)
+                    if not sku_col:
+                        sku_col = next((c for c in df_filtered.columns if 'sku' in c), 'SKU')
+                    
+                    if DEBUG_MODE and sku_col:
+                        st.sidebar.success(f"✅ {file_display_name}: SKU column found: '{sku_col}'")
+                
+                # Find quantity and order columns (SAMA UNTUK SEMUA MARKETPLACE)
+                qty_col = next((c for c in df_filtered.columns if any(x in c for x in ['jumlah', 'quantity'])), None)
+                order_col = next((c for c in df_filtered.columns if any(x in c for x in ['order', 'pesanan', 'invoice'])), None)
+                
+                if DEBUG_MODE:
+                    st.sidebar.write(f"{file_display_name} - Columns identified: SKU: {sku_col}, Qty: {qty_col}, Order: {order_col}")
+                
+                if not all([sku_col, qty_col, order_col]):
+                    st.sidebar.warning(f"⚠️ {file_display_name}: Kolom tidak lengkap. SKU: {sku_col}, Qty: {qty_col}, Order: {order_col}")
+                    continue
+                
+                # Process rows
+                for idx, row in df_filtered.iterrows():
+                    raw_sku = str(row[sku_col]) if pd.notna(row[sku_col]) else ''
+                    sku_clean = clean_sku(raw_sku)
+                    order_id = str(row[order_col]) if pd.notna(row[order_col]) else ''
+                    
+                    try:
+                        qty = float(str(row[qty_col]).replace(',', '.')) if pd.notna(row[qty_col]) else 0
+                    except:
+                        qty = 0
+                    
+                    if not sku_clean or qty <= 0:
+                        continue
+                    
+                    if sku_clean in bundle_map:
+                        for comp_sku, comp_qty in bundle_map[sku_clean]:
+                            all_rows.append({
+                                'Marketplace': mp_type,
+                                'Order ID': order_id,
+                                'SKU Original': raw_sku,
+                                'Is Bundle': 'Yes',
+                                'SKU Component': comp_sku,
+                                'Nama Produk': sku_name_map.get(comp_sku, comp_sku),
+                                'Qty Total': qty * comp_qty,
+                                'Source File': file_obj.name  # Tambah kolom source file
+                            })
+                    else:
                         all_rows.append({
                             'Marketplace': mp_type,
                             'Order ID': order_id,
                             'SKU Original': raw_sku,
-                            'Is Bundle': 'Yes',
-                            'SKU Component': comp_sku,
-                            'Nama Produk': sku_name_map.get(comp_sku, comp_sku),
-                            'Qty Total': qty * comp_qty
+                            'Is Bundle': 'No',
+                            'SKU Component': sku_clean,
+                            'Nama Produk': sku_name_map.get(sku_clean, sku_clean),
+                            'Qty Total': qty,
+                            'Source File': file_obj.name  # Tambah kolom source file
                         })
-                else:
-                    all_rows.append({
-                        'Marketplace': mp_type,
-                        'Order ID': order_id,
-                        'SKU Original': raw_sku,
-                        'Is Bundle': 'No',
-                        'SKU Component': sku_clean,
-                        'Nama Produk': sku_name_map.get(sku_clean, sku_clean),
-                        'Qty Total': qty
-                    })
         
         # Create results
         df_detail = pd.DataFrame(all_rows)
         df_summary = pd.DataFrame()
         
         if not df_detail.empty:
+            # Group by SKU Component (exclude Source File from grouping)
             df_summary = df_detail.groupby(['Marketplace', 'SKU Component', 'Nama Produk'], as_index=False)['Qty Total'].sum()
             df_summary = df_summary.sort_values('Qty Total', ascending=False)
         
@@ -446,17 +444,66 @@ else:
 
 st.sidebar.markdown("---")
 
-# Sidebar Section 2: Upload Files
+# Sidebar Section 2: Upload Files - NOW MULTIPLE FILES
 st.sidebar.header("📁 2. Upload Order Files")
 st.sidebar.markdown("""
 **Format SKU:**
 - **Shopee**: **Hanya ambil dari "Nomor Referensi SKU"**
 - **Tokopedia**: Tetap seperti sebelumnya
+
+**🔥 NEW: Bisa upload multiple files per marketplace!**
 """)
 
-shp_off_f = st.sidebar.file_uploader("Shopee (Official)", type=['xlsx', 'xls', 'csv'], key="shopee_off")
-shp_inh_f = st.sidebar.file_uploader("Shopee (INHOUSE)", type=['xlsx', 'xls', 'csv'], key="shopee_in")
-tok_f = st.sidebar.file_uploader("Tokopedia", type=['xlsx', 'xls', 'csv'], key="tokopedia")
+# MULTIPLE FILE UPLOADERS
+st.sidebar.subheader("Shopee (Official)")
+shp_off_files = st.sidebar.file_uploader(
+    "Upload Shopee (Official) files", 
+    type=['xlsx', 'xls', 'csv'], 
+    key="shopee_off",
+    accept_multiple_files=True
+)
+
+st.sidebar.subheader("Shopee (INHOUSE)")
+shp_inh_files = st.sidebar.file_uploader(
+    "Upload Shopee (INHOUSE) files", 
+    type=['xlsx', 'xls', 'csv'], 
+    key="shopee_in",
+    accept_multiple_files=True
+)
+
+st.sidebar.subheader("Tokopedia")
+tok_files = st.sidebar.file_uploader(
+    "Upload Tokopedia files", 
+    type=['xlsx', 'xls', 'csv'], 
+    key="tokopedia",
+    accept_multiple_files=True
+)
+
+# Show uploaded files count
+uploaded_counts = {
+    "Shopee (Official)": len(shp_off_files) if shp_off_files else 0,
+    "Shopee (INHOUSE)": len(shp_inh_files) if shp_inh_files else 0,
+    "Tokopedia": len(tok_files) if tok_files else 0
+}
+
+st.sidebar.info(f"""
+**📊 Files Ready:**
+- Shopee (Official): {uploaded_counts['Shopee (Official)']} file(s)
+- Shopee (INHOUSE): {uploaded_counts['Shopee (INHOUSE)']} file(s)
+- Tokopedia: {uploaded_counts['Tokopedia']} file(s)
+**Total: {sum(uploaded_counts.values())} file(s)**
+""")
+
+# Show uploaded file names
+if DEBUG_MODE and sum(uploaded_counts.values()) > 0:
+    with st.sidebar.expander("📋 List Uploaded Files"):
+        for mp_type, files in [("Shopee (Official)", shp_off_files), 
+                               ("Shopee (INHOUSE)", shp_inh_files), 
+                               ("Tokopedia", tok_files)]:
+            if files:
+                st.write(f"**{mp_type}:**")
+                for f in files:
+                    st.write(f"- {f.name}")
 
 st.sidebar.markdown("---")
 
@@ -473,25 +520,32 @@ if st.sidebar.button("🚀 PROSES DATA", type="primary", use_container_width=Tru
         st.error("❌ Silakan load kamus terlebih dahulu!")
         st.stop()
     
-    files = []
-    if shp_off_f: 
-        files.append(('Shopee (Official)', shp_off_f))
-        st.sidebar.success(f"✅ Shopee Official uploaded: {shp_off_f.name}")
-    if shp_inh_f: 
-        files.append(('Shopee (INHOUSE)', shp_inh_f))
-        st.sidebar.success(f"✅ Shopee INHOUSE uploaded: {shp_inh_f.name}")
-    if tok_f: 
-        files.append(('Tokopedia', tok_f))
-        st.sidebar.success(f"✅ Tokopedia uploaded: {tok_f.name}")
+    # Prepare files dictionary
+    files_dict = {}
     
-    if not files:
+    if shp_off_files:
+        files_dict['Shopee (Official)'] = shp_off_files
+        st.sidebar.success(f"✅ Shopee Official: {len(shp_off_files)} file(s)")
+    
+    if shp_inh_files:
+        files_dict['Shopee (INHOUSE)'] = shp_inh_files
+        st.sidebar.success(f"✅ Shopee INHOUSE: {len(shp_inh_files)} file(s)")
+    
+    if tok_files:
+        files_dict['Tokopedia'] = tok_files
+        st.sidebar.success(f"✅ Tokopedia: {len(tok_files)} file(s)")
+    
+    if not files_dict:
         st.error("❌ Upload minimal satu file order!")
         st.stop()
+    
+    # Convert to list format for processing
+    uploaded_files = [(mp_type, file_list) for mp_type, file_list in files_dict.items()]
     
     # Process data
     with st.spinner("🔄 Memproses data..."):
         try:
-            results, error = process_universal_data(files, st.session_state.kamus_data)
+            results, error = process_universal_data(uploaded_files, st.session_state.kamus_data)
             
             if error:
                 st.error(f"❌ Error: {error}")
@@ -522,7 +576,7 @@ if st.session_state.processed and st.session_state.results:
             st.dataframe(results['detail'], use_container_width=True)
             
             # Summary stats
-            col1, col2, col3, col4 = st.columns(4)
+            col1, col2, col3, col4, col5 = st.columns(5)
             with col1:
                 st.metric("Total Orders", len(results['detail']['Order ID'].unique()))
             with col2:
@@ -532,6 +586,9 @@ if st.session_state.processed and st.session_state.results:
             with col4:
                 bundle_count = results['detail']['Is Bundle'].value_counts().get('Yes', 0)
                 st.metric("Bundle Items", bundle_count)
+            with col5:
+                unique_files = results['detail']['Source File'].nunique()
+                st.metric("Total Files", unique_files)
         
         with tab2:
             if not results['summary'].empty:
@@ -575,7 +632,7 @@ if st.session_state.processed and st.session_state.results:
             
             # Auto-adjust column widths
             for sheet in writer.sheets.values():
-                sheet.set_column('A:G', 20)
+                sheet.set_column('A:H', 20)
         
         st.download_button(
             label="📥 Download Excel Report",
@@ -603,23 +660,24 @@ elif 'results' in st.session_state and st.session_state.results is None:
     st.info("ℹ️ Upload file dan klik 'PROSES DATA' untuk memulai.")
 
 st.sidebar.markdown("---")
-st.sidebar.caption(f"v4.2 • Shopee: SKU Logic Fixed • Tokped: Unchanged • {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+st.sidebar.caption(f"v4.3 • Multiple Files Support • {datetime.now().strftime('%d/%m/%Y %H:%M')}")
 
 # Info panel
-with st.sidebar.expander("ℹ️ Panduan SKU"):
+with st.sidebar.expander("ℹ️ Panduan Upload"):
     st.markdown("""
-    **Aturan Pengambilan SKU:**
+    **📁 Upload Multiple Files:**
     
-    **SHOPEE (Official & INHOUSE):**
-    - ✅ **Hanya ambil dari:** "Nomor Referensi SKU"
-    - ❌ **Tidak ambil dari:** "Nama Produk", "Varian", "Seller SKU", dll
+    **UNTUK SETIAP MARKETPLACE:**
+    - Bisa upload **1 atau lebih file**
+    - File akan digabungkan otomatis
+    - Semua file diproses dengan logic yang sama
     
-    **TOKOPEDIA:**
-    - ✅ **Tetap logic sebelumnya:**
-      1. Cari "seller sku" atau "nomor sku" dulu
-      2. Jika tidak ada, ambil dari kolom "sku"
+    **CONTOH PENGGUNAAN:**
+    - Upload 2 file Shopee Official dari hari berbeda
+    - Upload 3 file Shopee INHOUSE dari berbagai store
+    - Upload 1 file Tokopedia
     
-    **Pastikan file Shopee memiliki kolom 'Nomor Referensi SKU'!**
+    **Semua data akan digabung dalam 1 report!**
     """)
 
 # Clear cache button (for debugging)
